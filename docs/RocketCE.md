@@ -1,11 +1,6 @@
 # Rocket Cognitive Environment (RocketCE)
 
-RocketCE offers a POWER-optimized software stack for running AI workloads.
-It has builtin exploitation of the [AI acceleration of the Power chipset](./RocketCE/mma.md).
-The product aims to minimize the entry barrier for AI by natively using Python
-packages on Linux LPARs, without any container platform needed.
-Benefit from over 200 packages optimized for IBM Power10 and backed by enterprise
-support from IBM and Rocket.
+RocketCE offers a POWER-optimized software stack for running AI workloads. It has builtin exploitation of the [AI acceleration of the Power chipset](./RocketCE/mma.md). The product aims to minimize the entry barrier for AI by natively using Python packages on Linux LPARs, without any container platform needed. Benefit from over 200 packages optimized for IBM Power and backed by enterprise support from IBM and Rocket.
 
 **Why choose it?**
 
@@ -68,7 +63,8 @@ It's also recommended to perform the memory optimizations using command `optmem`
     optmem -m <system_name> -o start -t affinity --id <lpar_id>
     ```
 
-    > Note: When using command optmem, the affinity score of other LPARs on the same system could be either positively or negatively impacted by the optimization.
+    > [!NOTE]
+    > When using command optmem, the affinity score of other LPARs on the same system could be either positively or negatively impacted by the optimization.
 
 4. Check the progress of the optimization. When it's complete, reboot the LPAR to apply the changes.
 
@@ -98,6 +94,118 @@ Memory should be sufficient for your intended workloads. Working with large lang
 For running demos and POCs, 1 TB of disk space is typically more than sufficient.
 
 ## Installation
+
+### Requirements
+
+- Power9, and later, technology-based servers, with or without GPU
+- Red Hat Enterprise Linux 9.0, or later
+- Packages and binaries from the RocketCE channel
+
+### Installation Guide
+
+The binaries and packages optimized for IBM Power architecture are available in [RocketCE](https://anaconda.org/rocketce) channel. It is recommended to use Mamba instead of Conda to manage and resolve the packages, as Mamba is typically faster and can significantly reduce installation times, especially in large environments.
+
+1. Run the commands below to install micromamba  
+
+    ```bash
+    dnf install bzip2 libxcrypt-compat vim -y
+    "${SHELL}" <(curl -L micro.mamba.pm/install.sh)
+    source ${HOME}/.bashrc
+    ```
+
+    An environment is a directory that contains a specific collection of Conda/Mamba packages that you have installed. You can use different environments for different projects or tasks. If you change one environment, your other environments are not affected. There is a default environment called `base` that include a Python installation and some core system libraries and dependencies of Conda/Mamba. It's recommended to avoid installing additional packages into the base environment. Additional packages needed for a new project should always be installed into a newly created Conda environment.
+
+    The commands below are used to create new environment, activate or deactivate environments.
+
+    ```bash
+    micromamba create -n myenv python=3.10 numpy pandas
+    micromamba activate myenv
+    micromamba deactivate myenv
+    ```
+
+    Please refer to the [Mamba documentation](https://mamba.readthedocs.io/en/latest/index.html) for more details.
+
+2. Configure micromamba to use RocketCE
+
+    ```bash
+    cat > ~/.condarc <<'EOF'
+    # Conda configuration see https://conda.io/projects/conda/en/latest/configuration.html
+    auto_update_conda: false
+    show_channel_urls: true
+    channel_priority: flexible
+    channels:
+    - rocketce
+    - defaults
+    EOF
+    ```
+
+    > [!WARNING]
+    > Adding Anaconda's defaults channel to above configuration requires an Anaconda license if you use it in a commercial context.
+
+3. Install packages
+
+    Those Python packages optimized for Power can be installed using micromamba command. Make sure you create a new environment to install these packages when you start a new project.  
+    The command below is an example of how to install Python, PyTorch, and other packages using micromamba.
+
+    ```bash
+    micromamba install --yes python=3.10 pytorch-cpu mamba conda pip
+    ```
+
+    For packages that are not available in `defaults` and `RocketCE` channels, you can try installing them from `conda-forge` channel.
+
+    ```bash
+    micromamba install --yes 'conda-forge::accelerate'
+    ```
+
+    > [!INFO]
+    > the conda-forge channel includes community-build packages; whereas the defaults and rocketce channels provide enterprise-grade builds and support.
+
+    For packages that are not available in any Conda channels, you can choose to use `pip` to install them. But try to minimize using `pip` where possible as to keep your Conda environment clean and well-managed. You can preconfigure pip to use pre-build Python wheels from a repository by Power champion `Marvin Gießing` who precompiled some useful wheels, which speeds up package installations.
+
+    - Optional: configure pip with Marvin's repos (recommended for rapid testing):
+
+    ```bash
+    mkdir ~/.pip && \
+    echo "[global]" >> ~/.pip/pip.conf && \
+    echo "extra-index-url = https://repo.fury.io/mgiessing" >> ~/.pip/pip.conf
+    ```
+
+    - Install pre-requisites from conda channels (in this example, these are needed for librosa):
+
+    ```bash
+    micromamba install --yes 'conda-forge::msgpack-python' 'conda-forge::soxr-python'
+    ```
+
+    - Install packages:
+
+    ```pip install --prefer-binary \
+    "librosa" \
+    "openai-whisper"
+    ```
+
+4. Use JupyterLab
+
+    JupyterLab is included in the RocketCE and it's the latest web-based interactive development environment for notebooks, code, and data.
+
+    - Install JupyterLab
+
+    ```bash
+    mamba install --yes jupyterlab
+    ```
+
+    - Start JupyterLab
+
+    ```bash
+    mkdir notebooks
+    nohup jupyter lab --notebook-dir=${HOME}/notebooks --ip=0.0.0.0 --no-browser --allow-root --port=8888 --NotebookApp.allow_origin='*' --NotebookApp.token='' --NotebookApp.password='' &
+    ```
+
+    - Access JupyterLab using the URL: `http://<server>:8888/lab`
+
+    The command used above to start JupyterLab does not specify a user password and uses HTTP for client-server communication. If you want to set a password and configure TLS/SSL for secure access, please refer to [Jupyter documentation](https://jupyter-server.readthedocs.io/en/latest/operators/public-server.html#jupyter-public-server).
+
+    > [!WARNING]
+    > If the firewall on the server is running, make sure it's configured to allow connections from client machines to access the port specified in the command above.
 
 ## Sample applications
 
