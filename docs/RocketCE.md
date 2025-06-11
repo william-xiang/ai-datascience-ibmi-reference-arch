@@ -545,7 +545,7 @@ ConfusionMatrixDisplay(cm, display_labels=['Normal', 'Attack']).plot()
 
 
     
-<!-- ![png](MLP_IDS_files/MLP_IDS_17_1.png) -->
+![png](MLP_IDS_files/MLP_IDS_17_1.png)
     
 
 
@@ -642,7 +642,7 @@ ConfusionMatrixDisplay(cm, display_labels=["Normal", "Attack"]).plot()
 
 
     
-<!-- ![png](MLP_IDS_files/MLP_IDS_21_2.png) -->
+![png](MLP_IDS_files/MLP_IDS_21_2.png)
     
 
 
