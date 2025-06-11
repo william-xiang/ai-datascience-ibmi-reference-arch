@@ -496,7 +496,7 @@ for epoch in range(num_epochs):
     Epoch 20 Loss: 29.2303
 
 
-Here the model is evaluated, and scores are calculated. The model shows a 99$ accuracy for the training data. 
+Here the model is evaluated, and scores are calculated. The model shows a 99% accuracy for the training data. 
 
 
 ```python
@@ -648,6 +648,261 @@ ConfusionMatrixDisplay(cm, display_labels=["Normal", "Attack"]).plot()
 
 As we can see here, the model shows a 79% F1-score on unseen data, which is not bad, but still far from the 99% we saw for known data. This points to the possibility of the model overfitting on the training data, which means it's learning patterns are too specific to the dataset. 
 
+#### Autoencoder
+The Autoencoder is a deep learning framework that is particularly suited to anomaly detection, because of the way it learns from training data. The model is aimed to encode input to smaller dimensions and then decode the input again and compare to the reconstruction to the original. It trains only on normal sets of data, so attack data is excluded. Once trained, the model infers by comparing its reconstruction loss to an assigned treshold. Since it is trained on normal data, anomalous data will have much larger reconstrcution errors. These are then classified as attack data. This architecture is particularly great for training in scenarios where attack data may not be readily available, but normal login data is.
+
+Once again, we bring in the necessary libraries, bring out the columns for the dataset and preprocess them through encoding, splitting and creating the required tensors.
+
+
+```python
+import pandas as pd
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.metrics import classification_report
+import matplotlib.pyplot as plt
+
+cols = [f'feature_{i}' for i in range(41)] + ['label', 'difficulty']
+df = pd.read_csv("KDDTrain+.txt", header=None, names=cols)
+
+# --- Encode Categorical Features ---
+for col in ['feature_1', 'feature_2', 'feature_3']:
+    df[col] = LabelEncoder().fit_transform(df[col])
+
+# --- Binary Labels: 0 = normal, 1 = attack ---
+df['label'] = df['label'].apply(lambda x: 0 if x == 'normal' else 1)
+
+# --- Split into Normal Data for Training ---
+df_normal = df[df['label'] == 0]
+X_normal = df_normal.iloc[:, :-2].values  # exclude label and difficulty
+scaler = StandardScaler()
+X_normal_scaled = scaler.fit_transform(X_normal)
+
+# --- Dataset and Dataloader ---
+class KDDDataset(Dataset):
+    def __init__(self, X):
+        self.X = torch.tensor(X, dtype=torch.float32)
+    def __len__(self):
+        return len(self.X)
+    def __getitem__(self, idx):
+        return self.X[idx]
+
+```
+
+Here the Autoencoder architecture is defined, with some layer definitions similar to the MLP before, but with separate encoder and decoder structures. The model is trained with different hyperparameters to account for the different architecture, but with the same epochs.
+
+
+```python
+train_loader = DataLoader(KDDDataset(X_normal_scaled), batch_size=64, shuffle=True)
+
+# --- Autoencoder Model ---
+class Autoencoder(nn.Module):
+    def __init__(self, input_dim):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16),
+            nn.ReLU(),
+            nn.Linear(16, 8)
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(8, 16),
+            nn.ReLU(),
+            nn.Linear(16, 32),
+            nn.ReLU(),
+            nn.Linear(32, input_dim)
+        )
+    def forward(self, x):
+        encoded = self.encoder(x)
+        decoded = self.decoder(encoded)
+        return decoded
+
+# --- Train Autoencoder ---
+model = Autoencoder(input_dim=X_normal_scaled.shape[1])
+criterion = nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+for epoch in range(20):
+    model.train()
+    epoch_loss = 0
+    for batch in train_loader:
+        optimizer.zero_grad()
+        reconstructed = model(batch)
+        loss = criterion(reconstructed, batch)
+        loss.backward()
+        optimizer.step()
+        epoch_loss += loss.item()
+    print(f"Epoch {epoch+1}: Loss = {epoch_loss:.4f}")
+
+```
+
+    Epoch 1: Loss = 597.2390
+    Epoch 2: Loss = 395.0864
+    Epoch 3: Loss = 362.9184
+    Epoch 4: Loss = 329.4662
+    Epoch 5: Loss = 295.6486
+    Epoch 6: Loss = 269.6198
+    Epoch 7: Loss = 243.9348
+    Epoch 8: Loss = 226.6568
+    Epoch 9: Loss = 214.4579
+    Epoch 10: Loss = 213.0202
+    Epoch 11: Loss = 203.8965
+    Epoch 12: Loss = 190.8050
+    Epoch 13: Loss = 190.8388
+    Epoch 14: Loss = 179.9271
+    Epoch 15: Loss = 165.8987
+    Epoch 16: Loss = 163.0989
+    Epoch 17: Loss = 162.1195
+    Epoch 18: Loss = 153.0480
+    Epoch 19: Loss = 140.7381
+    Epoch 20: Loss = 145.7372
+
+
+The model is then evaluated with a select threshold for reconstruction. Samples where reconstruction error/loss is greater than the threshold are classified as anomalous. Training evaluation shows a 93% F1-score for the model, which may be less than the 99% the MLP showed, but the real test will be on unseen data.
+
+
+```python
+X_all = df.iloc[:, :-2].values
+y_all = df['label'].values
+X_all_scaled = scaler.transform(X_all)
+X_all_tensor = torch.tensor(X_all_scaled, dtype=torch.float32)
+
+model.eval()
+with torch.no_grad():
+    reconstructed = model(X_all_tensor)
+    reconstruction_errors = torch.mean((X_all_tensor - reconstructed) ** 2, dim=1).numpy()
+
+# --- Set Threshold (90th percentile of normal training errors) ---
+train_errors = []
+with torch.no_grad():
+    for x in KDDDataset(X_normal_scaled):
+        train_errors.append(torch.mean((x - model(x))**2).item())
+
+threshold = np.percentile(train_errors, 90)
+print(f"Reconstruction error threshold: {threshold:.6f}")
+
+# --- Predict Anomalies ---
+y_pred = (reconstruction_errors > threshold).astype(int)
+
+# --- Evaluation Report ---
+print("\n--- Classification Report ---")
+print(classification_report(y_all, y_pred, target_names=["Normal", "Attack"]))
+
+# --- Optional: Visualize Reconstruction Errors ---
+plt.figure(figsize=(10, 5))
+plt.hist(reconstruction_errors, bins=100, alpha=0.7, label='All Samples')
+plt.axvline(threshold, color='red', linestyle='--', label='Threshold')
+plt.xlabel("Reconstruction Error")
+plt.ylabel("Frequency")
+plt.title("Reconstruction Error Distribution")
+plt.legend()
+plt.grid(True)
+plt.show()
+```
+
+    Reconstruction error threshold: 0.165378
+    
+    --- Classification Report ---
+                  precision    recall  f1-score   support
+    
+          Normal       0.97      0.90      0.93     67343
+          Attack       0.89      0.96      0.93     58630
+    
+        accuracy                           0.93    125973
+       macro avg       0.93      0.93      0.93    125973
+    weighted avg       0.93      0.93      0.93    125973
+    
+
+
+
+    
+![png](Autoencoder_files/Autoencoder_5_1.png)
+    
+
+
+
+```python
+df_test = pd.read_csv("KDDTest+.txt", header=None, names=cols)
+
+# --- Encode categorical features (same method as training) ---
+for col in ['feature_1', 'feature_2', 'feature_3']:
+    df_test[col] = LabelEncoder().fit_transform(df_test[col])  # ideally reuse encoder from training
+
+# --- Binary labels ---
+df_test['label'] = df_test['label'].apply(lambda x: 0 if x == 'normal' else 1)
+
+# --- Extract features and scale using training scaler ---
+X_test_raw = df_test.iloc[:, :-2].values
+y_test = df_test['label'].values
+X_test_scaled = scaler.transform(X_test_raw)  # 🚨 reuse training scaler!
+
+# --- Run model on test data ---
+X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32)
+model.eval()
+
+with torch.no_grad():
+    reconstructed_test = model(X_test_tensor)
+    test_errors = torch.mean((X_test_tensor - reconstructed_test) ** 2, dim=1).numpy()
+
+# --- Classify using threshold (from training) ---
+y_test_pred = (test_errors > threshold).astype(int)
+
+# --- Evaluate performance ---
+from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
+
+print("\n--- KDDTest+ Evaluation ---")
+print(classification_report(y_test, y_test_pred, target_names=["Normal", "Attack"]))
+
+cm = confusion_matrix(y_test, y_test_pred)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Normal", "Attack"])
+disp.plot(cmap="Blues", values_format='d')
+plt.title("Confusion Matrix - KDDTest+")
+plt.grid(False)
+plt.show()
+
+# --- Optional: Plot reconstruction error histogram ---
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10, 5))
+plt.hist(test_errors, bins=100, alpha=0.7, label="KDDTest+ Errors")
+plt.axvline(threshold, color="red", linestyle="--", label=f"Threshold = {threshold:.6f}")
+plt.xlabel("Reconstruction Error")
+plt.ylabel("Frequency")
+plt.title("KDDTest+ Reconstruction Error Distribution")
+plt.legend()
+plt.grid(True)
+plt.show()
+```
+
+    
+    --- KDDTest+ Evaluation ---
+                  precision    recall  f1-score   support
+    
+          Normal       0.80      0.94      0.87      9711
+          Attack       0.95      0.83      0.88     12833
+    
+        accuracy                           0.87     22544
+       macro avg       0.88      0.88      0.87     22544
+    weighted avg       0.89      0.87      0.88     22544
+    
+
+
+
+    
+![png](Autoencoder_files/Autoencoder_6_1.png)
+    
+
+
+
+    
+![png](Autoencoder_files/Autoencoder_6_2.png)
+    
+
+
+As can be seen here, the model performs much better than the MLP on unseen data, which is what is expected of it in real-world applications. The f1-score shows an accuracy of 88% compared to the 79% of the MLP. With further fine tuning of hyperparameters and more training epochs, this accuracy can be increased even further.
 
 
 ## Attribution
