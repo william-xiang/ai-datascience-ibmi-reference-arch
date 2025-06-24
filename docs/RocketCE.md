@@ -784,7 +784,7 @@ for epoch in range(30):
     Epoch 30: Loss = 108.7782
 
 
-The model is then evaluated with a select threshold for reconstruction. Samples where reconstruction error/loss is greater than the threshold are classified as anomalous. Training evaluation shows a 93% F1-score for the model, which may be less than the 99% the MLP showed, but the real test will be on unseen data.
+The model is then evaluated with a select threshold for reconstruction. Samples where reconstruction error/loss is greater than the threshold are classified as anomalous. Training evaluation shows a 91% F1-score for the model, which may be less than the 99% the MLP showed, but the real test will be on unseen data.
 
 
 ```python
@@ -926,7 +926,140 @@ plt.show()
 
 As can be seen here, the model performs much better than the MLP on unseen data, which is what is expected of it in real-world applications. The f1-score shows an accuracy of 88% compared to the 79% of the MLP. With further fine tuning of hyperparameters and more training epochs, this accuracy can be increased even further.
 
+##### Deployment
 
+A simple server program will deploy the trained model, using the Flask API. Once the server is running, requests can be sent to the server using the HTTP POST method. These requests can be sent as raw data, which will then be preprocessed by this program to be then fed into the inference model.
+
+Note: Here the Autoencoder model architecture must mirror the saved model.  
+
+
+```python
+from flask import Flask, request, jsonify
+import torch
+import numpy as np
+import joblib
+import pandas as pd
+
+# scaler and label loading
+scaler = joblib.load("scaler.pkl")
+label_encoders = joblib.load("label_encoders.pkl")
+
+class Autoencoder(torch.nn.Module):
+    def __init__(self, input_size):
+        super().__init__()
+        self.encoder = torch.nn.Sequential(
+            torch.nn.Linear(input_size, 32),
+            torch.nn.ReLU(),
+            torch.nn.Linear(32, 16),
+            torch.nn.ReLU(),
+            torch.nn.Linear(16, 8),
+        )
+        self.decoder = torch.nn.Sequential(
+            torch.nn.Linear(8, 16),
+            torch.nn.ReLU(),
+            torch.nn.Linear(16, 32),
+            torch.nn.ReLU(),
+            torch.nn.Linear(32, input_size),
+        )
+    def forward(self, x):
+        encoded = self.encoder(x)
+        decoded = self.decoder(encoded)
+        return decoded
+
+# Loading the trained model
+model = Autoencoder(input_size=41)
+model.load_state_dict(torch.load("autoencoder.pth"))
+model.eval()
+
+# Threshold from training
+THRESHOLD = 0.107242
+
+app = Flask(__name__)
+
+@app.route("/predict", methods=["POST"])
+def predict():
+    data = request.get_json()
+    features = data.get("features")
+
+    if not features or len(features) != 41:
+        return jsonify({"error": "Must provide 41 raw features"}), 400
+
+    # Convert input to DataFrame
+    input_df = pd.DataFrame([features], columns=[f"feature_{i}" for i in range(41)])
+
+    # Apply saved label encoders
+    for col in ['feature_1', 'feature_2', 'feature_3']:
+        le = label_encoders.get(col)
+        if le:
+            try:
+                input_df[col] = le.transform(input_df[col])
+            except ValueError as e:
+                return jsonify({"error": f"Invalid value for {col}: {e}"}), 400
+        else:
+            return jsonify({"error": f"Missing label encoder for {col}"}), 500
+
+    # Scale using saved scaler
+    try:
+        X_scaled = scaler.transform(input_df.values)
+    except Exception as e:
+        return jsonify({"error": f"Scaling failed: {str(e)}"}), 500
+
+    # Predict reconstruction error
+    X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
+    with torch.no_grad():
+        reconstructed = model(X_tensor)
+        error = torch.mean((X_tensor - reconstructed) ** 2).item()
+
+    is_anomaly = error > THRESHOLD
+
+    return jsonify({
+        "reconstruction_error": error,
+        "anomaly": is_anomaly
+    })
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)
+```
+
+A sample request program is provided here. This program can be used to make standalone requests to the inference model, or be automated to run as a batch processor, reading from access logs or audit journal entries. Alternatively, a real-time setup can be created where entries are made to a log through the IBM i audit journal, which will then trigger an event handler such as Manzan that will send the log entry to the inference model, and then take appropriate actions in case an anomaly is detected; thus encapsulating a real-time protection system.
+
+
+```python
+import requests
+
+# Raw data, seperated by commas and sent as a string
+raw_data = "0,tcp,private,REJ,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,117,10,0.00,0.00,1.00,1.00,0.09,0.06,0.00,255,10,0.04,0.05,0.00,0.00,0.00,0.00,1.00,1.00,neptune,21"
+
+# String split to retrieve features
+fields = raw_data.strip().split(',')
+
+# Remove label and difficulty columns
+features = fields[:-2]  # drop 'normal' and '21'
+
+processed_features = []
+for i, val in enumerate(features):
+    # Keep strings for categorical features
+    if i in [1, 2, 3]:  # feature_1, feature_2, feature_3 are categorical
+        processed_features.append(val)
+    else:
+        processed_features.append(float(val))
+
+# Prepare JSON payload
+payload = {
+    "features": processed_features
+}
+
+# Server request
+response = requests.post("http://localhost:8000/predict", json=payload)
+
+# Retrieve results from the response, which indicate whether the login string is normal or an anomaly
+if response.status_code == 200:
+    print("✅ Server Response:")
+    print(response.json())
+else:
+    print("❌ Error:")
+    print(response.status_code, response.text)
+```
 
 ## Attribution
 
