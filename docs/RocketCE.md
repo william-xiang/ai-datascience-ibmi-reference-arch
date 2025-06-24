@@ -663,24 +663,35 @@ from torch.utils.data import DataLoader, Dataset
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import classification_report
 import matplotlib.pyplot as plt
+import joblib
 
 cols = [f'feature_{i}' for i in range(41)] + ['label', 'difficulty']
 df = pd.read_csv("KDDTrain+.txt", header=None, names=cols)
 
-# --- Encode Categorical Features ---
-for col in ['feature_1', 'feature_2', 'feature_3']:
-    df[col] = LabelEncoder().fit_transform(df[col])
+label_encoders = {}
 
-# --- Binary Labels: 0 = normal, 1 = attack ---
+# Encoding of categorical featuers to numerical values
+for col in ['feature_1', 'feature_2', 'feature_3']:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col])
+    label_encoders[col] = le
+
+# Save encoders
+joblib.dump(label_encoders, "label_encoders.pkl")
+
+# Binary filtering
 df['label'] = df['label'].apply(lambda x: 0 if x == 'normal' else 1)
 
-# --- Split into Normal Data for Training ---
+# Normal split for training
 df_normal = df[df['label'] == 0]
 X_normal = df_normal.iloc[:, :-2].values  # exclude label and difficulty
 scaler = StandardScaler()
 X_normal_scaled = scaler.fit_transform(X_normal)
 
-# --- Dataset and Dataloader ---
+# Save the scaler for deployment
+joblib.dump(scaler, "scaler.pkl") 
+
+# load the Dataset
 class KDDDataset(Dataset):
     def __init__(self, X):
         self.X = torch.tensor(X, dtype=torch.float32)
@@ -697,7 +708,7 @@ Here the Autoencoder architecture is defined, with some layer definitions simila
 ```python
 train_loader = DataLoader(KDDDataset(X_normal_scaled), batch_size=64, shuffle=True)
 
-# --- Autoencoder Model ---
+# Autoencoder architecture
 class Autoencoder(nn.Module):
     def __init__(self, input_dim):
         super().__init__()
@@ -720,12 +731,12 @@ class Autoencoder(nn.Module):
         decoded = self.decoder(encoded)
         return decoded
 
-# --- Train Autoencoder ---
+# Training
 model = Autoencoder(input_dim=X_normal_scaled.shape[1])
 criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-for epoch in range(20):
+for epoch in range(30):
     model.train()
     epoch_loss = 0
     for batch in train_loader:
@@ -736,29 +747,41 @@ for epoch in range(20):
         optimizer.step()
         epoch_loss += loss.item()
     print(f"Epoch {epoch+1}: Loss = {epoch_loss:.4f}")
+    
+    torch.save(model.state_dict(), "autoencoder.pth")
 
 ```
 
-    Epoch 1: Loss = 597.2390
-    Epoch 2: Loss = 395.0864
-    Epoch 3: Loss = 362.9184
-    Epoch 4: Loss = 329.4662
-    Epoch 5: Loss = 295.6486
-    Epoch 6: Loss = 269.6198
-    Epoch 7: Loss = 243.9348
-    Epoch 8: Loss = 226.6568
-    Epoch 9: Loss = 214.4579
-    Epoch 10: Loss = 213.0202
-    Epoch 11: Loss = 203.8965
-    Epoch 12: Loss = 190.8050
-    Epoch 13: Loss = 190.8388
-    Epoch 14: Loss = 179.9271
-    Epoch 15: Loss = 165.8987
-    Epoch 16: Loss = 163.0989
-    Epoch 17: Loss = 162.1195
-    Epoch 18: Loss = 153.0480
-    Epoch 19: Loss = 140.7381
-    Epoch 20: Loss = 145.7372
+    Epoch 1: Loss = 565.0578
+    Epoch 2: Loss = 383.6122
+    Epoch 3: Loss = 334.7362
+    Epoch 4: Loss = 300.4106
+    Epoch 5: Loss = 273.1934
+    Epoch 6: Loss = 259.6165
+    Epoch 7: Loss = 240.5221
+    Epoch 8: Loss = 227.8049
+    Epoch 9: Loss = 214.4291
+    Epoch 10: Loss = 200.6379
+    Epoch 11: Loss = 202.8242
+    Epoch 12: Loss = 187.6722
+    Epoch 13: Loss = 183.3485
+    Epoch 14: Loss = 173.3698
+    Epoch 15: Loss = 174.0280
+    Epoch 16: Loss = 158.9706
+    Epoch 17: Loss = 178.3431
+    Epoch 18: Loss = 151.2482
+    Epoch 19: Loss = 144.3017
+    Epoch 20: Loss = 151.7069
+    Epoch 21: Loss = 140.0257
+    Epoch 22: Loss = 141.3111
+    Epoch 23: Loss = 129.8577
+    Epoch 24: Loss = 132.3928
+    Epoch 25: Loss = 122.1607
+    Epoch 26: Loss = 131.3124
+    Epoch 27: Loss = 135.3820
+    Epoch 28: Loss = 112.4674
+    Epoch 29: Loss = 116.3008
+    Epoch 30: Loss = 108.7782
 
 
 The model is then evaluated with a select threshold for reconstruction. Samples where reconstruction error/loss is greater than the threshold are classified as anomalous. Training evaluation shows a 93% F1-score for the model, which may be less than the 99% the MLP showed, but the real test will be on unseen data.
@@ -775,23 +798,22 @@ with torch.no_grad():
     reconstructed = model(X_all_tensor)
     reconstruction_errors = torch.mean((X_all_tensor - reconstructed) ** 2, dim=1).numpy()
 
-# --- Set Threshold (90th percentile of normal training errors) ---
+# Set threshold for anomaly detection (set at 85 here, but can be optimized for best performance)
 train_errors = []
 with torch.no_grad():
     for x in KDDDataset(X_normal_scaled):
         train_errors.append(torch.mean((x - model(x))**2).item())
 
-threshold = np.percentile(train_errors, 90)
+threshold = np.percentile(train_errors, 85)
 print(f"Reconstruction error threshold: {threshold:.6f}")
 
-# --- Predict Anomalies ---
+# Prediction and evaluation
 y_pred = (reconstruction_errors > threshold).astype(int)
 
-# --- Evaluation Report ---
 print("\n--- Classification Report ---")
 print(classification_report(y_all, y_pred, target_names=["Normal", "Attack"]))
 
-# --- Optional: Visualize Reconstruction Errors ---
+# Reconstruction visualization
 plt.figure(figsize=(10, 5))
 plt.hist(reconstruction_errors, bins=100, alpha=0.7, label='All Samples')
 plt.axvline(threshold, color='red', linestyle='--', label='Threshold')
@@ -803,17 +825,17 @@ plt.grid(True)
 plt.show()
 ```
 
-    Reconstruction error threshold: 0.165378
+    Reconstruction error threshold: 0.107242
     
     --- Classification Report ---
                   precision    recall  f1-score   support
     
-          Normal       0.97      0.90      0.93     67343
-          Attack       0.89      0.96      0.93     58630
+          Normal       0.98      0.85      0.91     67343
+          Attack       0.85      0.98      0.91     58630
     
-        accuracy                           0.93    125973
-       macro avg       0.93      0.93      0.93    125973
-    weighted avg       0.93      0.93      0.93    125973
+        accuracy                           0.91    125973
+       macro avg       0.92      0.92      0.91    125973
+    weighted avg       0.92      0.91      0.91    125973
     
 
 
@@ -827,19 +849,19 @@ plt.show()
 ```python
 df_test = pd.read_csv("KDDTest+.txt", header=None, names=cols)
 
-# --- Encode categorical features (same method as training) ---
+# Same encoding as performed during training
 for col in ['feature_1', 'feature_2', 'feature_3']:
     df_test[col] = LabelEncoder().fit_transform(df_test[col])  # ideally reuse encoder from training
 
 # --- Binary labels ---
 df_test['label'] = df_test['label'].apply(lambda x: 0 if x == 'normal' else 1)
 
-# --- Extract features and scale using training scaler ---
+# Extract features and resuse training scaler
 X_test_raw = df_test.iloc[:, :-2].values
 y_test = df_test['label'].values
-X_test_scaled = scaler.transform(X_test_raw)  # 🚨 reuse training scaler!
+X_test_scaled = scaler.transform(X_test_raw)  
 
-# --- Run model on test data ---
+# Run on test data
 X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32)
 model.eval()
 
@@ -847,10 +869,10 @@ with torch.no_grad():
     reconstructed_test = model(X_test_tensor)
     test_errors = torch.mean((X_test_tensor - reconstructed_test) ** 2, dim=1).numpy()
 
-# --- Classify using threshold (from training) ---
+# Reuse training threshold and classify
 y_test_pred = (test_errors > threshold).astype(int)
 
-# --- Evaluate performance ---
+# Performance evaluation
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 
 print("\n--- KDDTest+ Evaluation ---")
@@ -863,7 +885,7 @@ plt.title("Confusion Matrix - KDDTest+")
 plt.grid(False)
 plt.show()
 
-# --- Optional: Plot reconstruction error histogram ---
+# Reconstruction error plot
 import matplotlib.pyplot as plt
 
 plt.figure(figsize=(10, 5))
@@ -881,12 +903,12 @@ plt.show()
     --- KDDTest+ Evaluation ---
                   precision    recall  f1-score   support
     
-          Normal       0.80      0.94      0.87      9711
-          Attack       0.95      0.83      0.88     12833
+          Normal       0.83      0.88      0.85      9711
+          Attack       0.90      0.87      0.88     12833
     
         accuracy                           0.87     22544
-       macro avg       0.88      0.88      0.87     22544
-    weighted avg       0.89      0.87      0.88     22544
+       macro avg       0.87      0.87      0.87     22544
+    weighted avg       0.87      0.87      0.87     22544
     
 
 
@@ -903,6 +925,7 @@ plt.show()
 
 
 As can be seen here, the model performs much better than the MLP on unseen data, which is what is expected of it in real-world applications. The f1-score shows an accuracy of 88% compared to the 79% of the MLP. With further fine tuning of hyperparameters and more training epochs, this accuracy can be increased even further.
+
 
 
 ## Attribution
