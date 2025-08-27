@@ -1061,6 +1061,1303 @@ else:
     print(response.status_code, response.text)
 ```
 
+### Fraud Detection
+
+#### Pre-processor
+First, we need to preprocess the data before feeding it to the LSTM, since the LSTM works on a timing window basis with the memory of previous transactions.
+
+```python
+import math
+import os
+import numpy as np
+import pandas as pd
+import re
+from requests import get
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import (
+    LabelEncoder,
+    OneHotEncoder,
+    FunctionTransformer,
+    MinMaxScaler,
+    LabelBinarizer,
+)
+from sklearn_pandas import DataFrameMapper
+
+```
+
+
+```python
+dist = pd.DataFrame({"No": [], "Yes": []})
+df_nf = pd.DataFrame()
+df_f = pd.DataFrame()
+
+# Read and process the CSV in chunks
+with pd.read_csv("card_transaction.v1.csv", chunksize=1_000_000) as reader:
+    for chunk in reader:
+        # Sample 5% of non-fraud rows
+        df_nf = pd.concat([df_nf, chunk[chunk["Is Fraud?"] == "No"].sample(frac=0.05)])
+        # Keep all fraud rows
+        df_f = pd.concat([df_f, chunk[chunk["Is Fraud?"] == "Yes"]])
+        # Track counts for ratio statistics
+        vc = chunk["Is Fraud?"].value_counts()
+        new = pd.DataFrame({"No": [vc.get("No", 0)], "Yes": [vc.get("Yes", 0)]})
+        dist = pd.concat([dist, new])
+
+# Save the results
+df_nf.to_csv("card_transactions_non-frauds.csv", index=False)
+df_f.to_csv("card_transactions_frauds.csv", index=False)
+print(f"Ratio Fraud/Non-Fraud: {dist['Yes'].sum() / dist['No'].sum()}")
+dist
+
+```
+
+    Ratio Fraud/Non-Fraud: 0.00122169500749739
+
+
+
+
+
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>No</th>
+      <th>Yes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>999008.0</td>
+      <td>992.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998768.0</td>
+      <td>1232.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998803.0</td>
+      <td>1197.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998856.0</td>
+      <td>1144.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998891.0</td>
+      <td>1109.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998675.0</td>
+      <td>1325.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998830.0</td>
+      <td>1170.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998686.0</td>
+      <td>1314.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998749.0</td>
+      <td>1251.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998721.0</td>
+      <td>1279.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>999017.0</td>
+      <td>983.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998667.0</td>
+      <td>1333.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998623.0</td>
+      <td>1377.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998730.0</td>
+      <td>1270.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998835.0</td>
+      <td>1165.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998893.0</td>
+      <td>1107.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998559.0</td>
+      <td>1441.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998826.0</td>
+      <td>1174.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998610.0</td>
+      <td>1390.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998659.0</td>
+      <td>1341.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998835.0</td>
+      <td>1165.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998700.0</td>
+      <td>1300.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998730.0</td>
+      <td>1270.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>998985.0</td>
+      <td>1015.0</td>
+    </tr>
+    <tr>
+      <th>0</th>
+      <td>386487.0</td>
+      <td>413.0</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+
+The transaction features need to be encoded as the LSTM requires numerical input.
+
+
+```python
+import pandas as pd
+import numpy as np
+import math
+
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import (
+    FunctionTransformer, OneHotEncoder, MinMaxScaler, LabelBinarizer
+)
+from sklearn.impute import SimpleImputer
+from sklearn.model_selection import train_test_split
+
+
+def fraud_encoder(X):
+    # Accepts DataFrame or Series
+    if isinstance(X, pd.DataFrame):
+        X = X.iloc[:, 0]
+    return np.where(X == "Yes", 1, 0).reshape(-1, 1)
+
+def amt_encoder(X):
+    # Accepts DataFrame or Series
+    if isinstance(X, pd.DataFrame):
+        X = X.iloc[:, 0]
+    amt = (
+        X.astype(str).str.replace("$", "", regex=False)
+        .astype(float)
+        .map(lambda amt: max(1, amt))
+        .map(math.log)
+    )
+    return np.array(amt).reshape(-1, 1)
+
+def decimal_encoder(X, length=5):
+    if isinstance(X, pd.DataFrame):
+        X = X.iloc[:, 0]
+    X = X.astype(str).str.replace(r'\D', '', regex=True)
+    X = X.replace('', '0').astype(int)
+    arr = []
+    for i in range(length):
+        arr.append(np.mod(X, 10))
+        X = np.floor_divide(X, 10)
+    return np.column_stack(arr)
+
+def time_encoder(df):
+    X_hm = df["Time"].str.split(":", expand=True)
+    d = pd.to_datetime(
+        dict(
+            year=df["Year"], month=df["Month"], day=df["Day"], hour=X_hm[0], minute=X_hm[1]
+        )
+    ).astype(int)
+    return np.array(d).reshape(-1, 1)
+
+def binarizer_func(x):
+    if isinstance(x, pd.DataFrame):
+        x = x.iloc[:, 0]
+    return LabelBinarizer().fit_transform(x.astype(str)).reshape(-1, 1)
+
+# Load data and define the columns
+
+tdf = pd.read_csv("./card_transaction.v1.csv", nrows=1_000_000)
+tdf["Merchant Name"] = tdf["Merchant Name"].astype(str)
+tdf.drop(["MCC", "Zip", "Merchant State"], axis=1, inplace=True)
+tdf.sort_values(by=["User", "Card"], inplace=True)
+tdf.reset_index(inplace=True, drop=True)
+
+fraud_col = "Is Fraud?"
+merchant_name_col = "Merchant Name"
+merchant_city_col = "Merchant City"
+chip_col = "Use Chip"
+errors_col = "Errors?"
+time_cols = ["Year", "Month", "Day", "Time"]
+amt_col = "Amount"
+
+# Preprocessor pipeline
+
+preprocessor = ColumnTransformer(
+    transformers=[
+        # Target label
+        ("fraud", FunctionTransformer(fraud_encoder, validate=False), [fraud_col]),
+
+        # Merchant Name: decimal encoder then one-hot
+        ("merchant_name", Pipeline([
+            ("decimal", FunctionTransformer(decimal_encoder, validate=False)),
+            ("onehot", OneHotEncoder(sparse_output=False, handle_unknown='ignore')),
+        ]), [merchant_name_col]),
+
+        # Merchant City: decimal encoder then one-hot
+        ("merchant_city", Pipeline([
+            ("decimal", FunctionTransformer(decimal_encoder, validate=False)),
+            ("onehot", OneHotEncoder(sparse_output=False, handle_unknown='ignore')),
+        ]), [merchant_city_col]),
+
+        # Use Chip: impute and binarize
+        ("chip", Pipeline([
+            ("imputer", SimpleImputer(strategy="constant", fill_value="missing_value")),
+            ("onehot", OneHotEncoder(sparse_output=False, handle_unknown='ignore')),
+        ]), [chip_col]),
+
+        # Errors?: impute and binarize
+        ("errors", Pipeline([
+            ("imputer", SimpleImputer(strategy="constant", fill_value="missing_value")),
+            ("onehot", OneHotEncoder(sparse_output=False, handle_unknown='ignore')),
+        ]), [errors_col]),
+
+        # Year/Month/Day/Time: encode and scale
+        ("time", Pipeline([
+            ("time_enc", FunctionTransformer(time_encoder, validate=False)),
+            ("scaler", MinMaxScaler()),
+        ]), time_cols),
+
+        # Amount: custom encode and scale
+        ("amount", Pipeline([
+            ("amt_enc", FunctionTransformer(amt_encoder, validate=False)),
+            ("scaler", MinMaxScaler()),
+        ]), [amt_col]),
+    ],
+    remainder="drop"
+)
+processed_array = preprocessor.fit_transform(tdf)
+
+# Retrieve feature names
+
+feature_names = [f"feature_{i}" for i in range(processed_array.shape[1])]
+
+print("Processed shape:", processed_array.shape)
+print("First few rows:\n", processed_array[:5])
+print("Feature names:", feature_names)
+
+y = processed_array[:, 0]      # Label
+X = processed_array[:, 1:]     # Features
+
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+np.savez("transactions_processed.npz", X=X, y=y)
+
+```
+
+    Processed shape: (1000000, 81)
+    First few rows:
+     [[0.         0.         0.         0.         1.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         1.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      1.         0.         0.         0.         0.         0.
+      0.         1.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      1.         0.         0.         1.         1.         1.
+      1.         1.         0.         0.         1.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      1.         0.26837517 0.55490584]
+     [0.         0.         0.         0.         1.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         1.         0.         0.
+      0.         0.         0.         1.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         1.         0.         0.         0.         0.
+      1.         0.         0.         0.         0.         0.
+      0.         0.         0.         1.         1.         1.
+      1.         1.         0.         0.         1.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      1.         0.26837684 0.41348956]
+     [0.         0.         0.         0.         1.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         1.         0.         0.
+      0.         0.         0.         1.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         1.         0.         0.         0.         0.
+      1.         0.         0.         0.         0.         0.
+      0.         0.         0.         1.         1.         1.
+      1.         1.         0.         0.         1.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      1.         0.26848975 0.54265   ]
+     [0.         1.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      1.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         1.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         1.         0.         0.         0.         1.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         1.         1.         1.
+      1.         1.         0.         0.         1.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      1.         0.26854406 0.5504781 ]
+     [0.         0.         0.         0.         0.         0.
+      0.         0.         1.         0.         0.         0.
+      0.         0.         0.         0.         0.         1.
+      0.         0.         0.         0.         0.         1.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         1.         0.         0.         0.         0.
+      0.         0.         1.         0.         0.         0.
+      0.         0.         0.         1.         1.         1.
+      1.         1.         0.         0.         1.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      0.         0.         0.         0.         0.         0.
+      1.         0.26860433 0.52688969]]
+    Feature names: ['feature_0', 'feature_1', 'feature_2', 'feature_3', 'feature_4', 'feature_5', 'feature_6', 'feature_7', 'feature_8', 'feature_9', 'feature_10', 'feature_11', 'feature_12', 'feature_13', 'feature_14', 'feature_15', 'feature_16', 'feature_17', 'feature_18', 'feature_19', 'feature_20', 'feature_21', 'feature_22', 'feature_23', 'feature_24', 'feature_25', 'feature_26', 'feature_27', 'feature_28', 'feature_29', 'feature_30', 'feature_31', 'feature_32', 'feature_33', 'feature_34', 'feature_35', 'feature_36', 'feature_37', 'feature_38', 'feature_39', 'feature_40', 'feature_41', 'feature_42', 'feature_43', 'feature_44', 'feature_45', 'feature_46', 'feature_47', 'feature_48', 'feature_49', 'feature_50', 'feature_51', 'feature_52', 'feature_53', 'feature_54', 'feature_55', 'feature_56', 'feature_57', 'feature_58', 'feature_59', 'feature_60', 'feature_61', 'feature_62', 'feature_63', 'feature_64', 'feature_65', 'feature_66', 'feature_67', 'feature_68', 'feature_69', 'feature_70', 'feature_71', 'feature_72', 'feature_73', 'feature_74', 'feature_75', 'feature_76', 'feature_77', 'feature_78', 'feature_79', 'feature_80']
+
+
+Save all relevant encoding data, to be used by the inference server
+
+
+```python
+import joblib, os, json
+os.makedirs("models", exist_ok=True)
+
+# Extract the fitted pieces to match the  ColumnTransformer blocks
+mn_onehot   = preprocessor.named_transformers_["merchant_name"].named_steps["onehot"]
+mc_onehot   = preprocessor.named_transformers_["merchant_city"].named_steps["onehot"]
+chip_imp    = preprocessor.named_transformers_["chip"].named_steps["imputer"]
+chip_onehot = preprocessor.named_transformers_["chip"].named_steps["onehot"]
+err_imp     = preprocessor.named_transformers_["errors"].named_steps["imputer"]
+err_onehot  = preprocessor.named_transformers_["errors"].named_steps["onehot"]
+time_scaler = preprocessor.named_transformers_["time"].named_steps["scaler"]
+amt_scaler  = preprocessor.named_transformers_["amount"].named_steps["scaler"]
+
+tx_bundle = {
+    "merchant_name_onehot": mn_onehot,
+    "merchant_city_onehot": mc_onehot,
+    "chip_imputer": chip_imp,
+    "chip_onehot": chip_onehot,
+    "errors_imputer": err_imp,
+    "errors_onehot": err_onehot,
+    "time_scaler": time_scaler,
+    "amount_scaler": amt_scaler,
+
+    # meta: column names the server will expect
+    "columns": {
+        "fraud": "Is Fraud?",
+        "merchant_name": "Merchant Name",
+        "merchant_city": "Merchant City",
+        "chip": "Use Chip",
+        "errors": "Errors?",
+        "time": ["Year","Month","Day","Time"],
+        "amount": "Amount",
+        "group_keys": ["User","Card"]  # used to build sequences
+    },
+    # the decimal encoder length you used
+    "decimal_length": 5
+}
+
+joblib.dump(tx_bundle, "models/inference_tx.joblib")
+print("Saved models/inference_tx.joblib")
+```
+
+#### Model training and Evaluation
+
+Here we have the setup for our model, which includes both an LSTM and XGBoost classifier to improve performance. It is quite difficult to extract features from the dataset to consistently detect frauds, simply due to the nature of the dataset with only 0.001% of the transactions being frauds. Nevertheless, and ensemble model with LSTM+XGBoost provides a respectable performance
+
+
+```python
+
+import os, math, random, warnings
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import pandas as pd
+np.random.seed(42); random.seed(42)
+
+import tensorflow as tf
+tf.random.set_seed(42)
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    confusion_matrix, classification_report,
+    precision_recall_curve, roc_auc_score, average_precision_score,
+    precision_score, recall_score, f1_score
+)
+
+# XGBoost baseline 
+from xgboost import XGBClassifier
+
+# Configuration setup
+DATA_PATH        = "transactions_processed.npz"
+SEQUENCE_LENGTH  = 7
+TEST_SIZE        = 0.20
+VAL_SIZE         = 0.20
+
+# LSTM training
+EPOCHS           = 40
+BATCH_SIZE       = 256
+USE_FOCAL_LOSS   = True
+TARGET_POS_RATIO = 1.0      # oversample positives to roughly 1:1 by sequence due to very low fraud samples
+
+# Thresholding
+TARGET_RECALL    = 0.70
+COST_FN          = 10.0     # false negative cost
+COST_FP          = 1.0      # false positive cost
+
+# Help functions
+def focal_loss(gamma: float = 3.0, alpha: float = 0.9):
+    """Binary focal loss (for extreme imbalance)."""
+    def _loss(y_true, y_pred):
+        eps = tf.keras.backend.epsilon()
+        y_pred = tf.clip_by_value(y_pred, eps, 1.0 - eps)
+        pt = tf.where(tf.equal(y_true, 1), y_pred, 1 - y_pred)
+        w  = tf.where(tf.equal(y_true, 1), alpha, 1 - alpha)
+        return tf.reduce_mean(-w * tf.pow(1 - pt, gamma) * tf.math.log(pt))
+    return _loss
+
+def make_sequences(X: np.ndarray, y: np.ndarray, seq_len: int):
+    """Non-overlapping sequences, label by last timestep."""
+    n = X.shape[0]
+    usable = (n // seq_len) * seq_len
+    X = X[:usable]
+    y = y[:usable]
+    X_seq = X.reshape(-1, seq_len, X.shape[1])
+    y_seq = y.reshape(-1, seq_len)[:, -1].astype(int)
+    return X_seq, y_seq
+
+def random_oversample_sequences(X_seq, y_seq, target_pos_ratio=1.0, rng=np.random):
+    """Oversample positive sequences to reach target pos:neg ratio."""
+    pos_idx = np.where(y_seq == 1)[0]
+    neg_idx = np.where(y_seq == 0)[0]
+    n_pos, n_neg = len(pos_idx), len(neg_idx)
+    if n_pos == 0:
+        return X_seq, y_seq
+    desired_pos = int(math.ceil(target_pos_ratio * n_neg))
+    if desired_pos <= n_pos:
+        sel_pos = pos_idx
+    else:
+        extra = desired_pos - n_pos
+        sel_pos = np.concatenate([pos_idx, rng.choice(pos_idx, size=extra, replace=True)])
+    idx = np.concatenate([neg_idx, sel_pos])
+    rng.shuffle(idx)
+    return X_seq[idx], y_seq[idx]
+
+def sweep_thresholds(y_true, y_proba, resolution=1500):
+    thresholds = np.linspace(1e-6, 0.999999, resolution)
+    rows = []
+    for t in thresholds:
+        yp = (y_proba >= t).astype(int)
+        p  = precision_score(y_true, yp, zero_division=0)
+        r  = recall_score(y_true, yp, zero_division=0)
+        f1 = 0.0 if (p+r)==0 else 2*p*r/(p+r)
+        rows.append({"threshold": t, "precision": p, "recall": r, "f1": f1})
+    return pd.DataFrame(rows)
+
+def pick_cost_min_threshold(y_true, y_proba, resolution=3000, cost_fn=COST_FN, cost_fp=COST_FP):
+    thresholds = np.linspace(1e-6, 0.999999, resolution)
+    best_t, best_c = None, float("inf")
+    for t in thresholds:
+        yp = (y_proba >= t).astype(int)
+        tn, fp, fn, tp = confusion_matrix(y_true, yp).ravel()
+        cost = cost_fn*fn + cost_fp*fp
+        if cost < best_c:
+            best_c, best_t = cost, t
+    return float(best_t), float(best_c)
+
+def pick_threshold_for_target_recall(y_true, y_proba, target=TARGET_RECALL, resolution=3000):
+    df = sweep_thresholds(y_true, y_proba, resolution)
+    cand = df[df["recall"] >= target]
+    if len(cand) == 0:
+        return float(df.iloc[df["f1"].idxmax()]["threshold"])
+    # highest threshold that still reaches target recall
+    cand = cand.sort_values("threshold")
+    return float(cand["threshold"].max())
+
+def evaluate_at(y_true, y_proba, thr, title):
+    yp = (y_proba >= thr).astype(int)
+    print(f"\n=== {title} (threshold={thr:.6f}) ===")
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_true, yp))
+    print("\nClassification Report:")
+    print(classification_report(y_true, yp, digits=4))
+    return {
+        "precision": precision_score(y_true, yp, zero_division=0),
+        "recall": recall_score(y_true, yp, zero_division=0),
+        "f1": f1_score(y_true, yp, zero_division=0),
+    }
+
+def summarize_split(name, y_true, y_prob):
+    roc = roc_auc_score(y_true, y_prob)
+    pr  = average_precision_score(y_true, y_prob)
+    print(f"{name} ROC AUC: {roc:.4f} | PR AUC: {pr:.4f}")
+    return roc, pr
+
+def build_lstm(input_timesteps, num_features):
+    return Sequential([
+        LSTM(128, input_shape=(input_timesteps, num_features), return_sequences=True),
+        Dropout(0.30),
+        LSTM(64),
+        Dropout(0.20),
+        Dense(1, activation="sigmoid"),
+    ])
+
+# Data loading and train-test split
+data = np.load(DATA_PATH)
+X_raw, y_raw = data["X"], data["y"].astype(int)
+X_seq, y_seq = make_sequences(X_raw, y_raw, SEQUENCE_LENGTH)
+print("X_seq:", X_seq.shape, "y_seq:", y_seq.shape)
+
+
+X_train_full, X_test, y_train_full, y_test = train_test_split(
+    X_seq, y_seq, test_size=TEST_SIZE, stratify=y_seq, random_state=42
+)
+X_train, X_val, y_train, y_val = train_test_split(
+    X_train_full, y_train_full, test_size=VAL_SIZE, stratify=y_train_full, random_state=42
+)
+print("Train:", X_train.shape, "Val:", X_val.shape, "Test:", X_test.shape)
+print("Train class counts:", np.bincount(y_train))
+
+# Oversampled LSTM
+X_train_res, y_train_res = random_oversample_sequences(
+    X_train, y_train, target_pos_ratio=TARGET_POS_RATIO, rng=np.random.default_rng(42)
+)
+print("Resampled train (LSTM):", X_train_res.shape, "class counts:", np.bincount(y_train_res))
+
+lstm_model = build_lstm(SEQUENCE_LENGTH, X_seq.shape[2])
+metrics = [
+    tf.keras.metrics.AUC(name="roc_auc", curve="ROC"),
+    tf.keras.metrics.AUC(name="pr_auc",  curve="PR"),
+    tf.keras.metrics.Precision(name="precision"),
+    tf.keras.metrics.Recall(name="recall"),
+]
+loss_fn = focal_loss(gamma=3.0, alpha=0.9) if USE_FOCAL_LOSS else "binary_crossentropy"
+lstm_model.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss=loss_fn, metrics=metrics)
+
+callbacks = [
+    EarlyStopping(monitor="val_pr_auc", mode="max", patience=8, restore_best_weights=True),
+    ReduceLROnPlateau(monitor="val_pr_auc", mode="max", factor=0.5, patience=3, min_lr=1e-6, verbose=1),
+]
+
+lstm_model.fit(
+    X_train_res, y_train_res,
+    validation_data=(X_val, y_val),
+    epochs=EPOCHS,
+    batch_size=BATCH_SIZE,
+    callbacks=callbacks,
+    verbose=2
+)
+
+y_val_lstm  = lstm_model.predict(X_val,  batch_size=1024).ravel()
+y_test_lstm = lstm_model.predict(X_test, batch_size=1024).ravel()
+summarize_split("VAL (LSTM)",  y_val,  y_val_lstm)
+summarize_split("TEST (LSTM)", y_test, y_test_lstm)
+
+# Baseline XGBoost
+X_train_tab = X_train[:, -1, :]
+X_val_tab   = X_val[:,   -1, :]
+X_test_tab  = X_test[:,  -1, :]
+
+# Scaling with original sample ratios before oversampling
+n_pos = max(1, int(np.sum(y_train == 1)))
+n_neg = max(1, int(np.sum(y_train == 0)))
+spw   = n_neg / n_pos
+
+xgb = XGBClassifier(
+    n_estimators=600,
+    max_depth=6,
+    learning_rate=0.05,
+    subsample=0.9,
+    colsample_bytree=0.9,
+    reg_lambda=1.0,
+    reg_alpha=0.0,
+    eval_metric="aucpr",
+    scale_pos_weight=spw,
+    tree_method="hist",
+    random_state=42,
+    n_jobs=0
+)
+xgb.fit(X_train_tab, y_train, eval_set=[(X_val_tab, y_val)], verbose=False)
+
+y_val_xgb  = xgb.predict_proba(X_val_tab)[:, 1]
+y_test_xgb = xgb.predict_proba(X_test_tab)[:, 1]
+summarize_split("VAL (XGB)",  y_val,  y_val_xgb)
+summarize_split("TEST (XGB)", y_test, y_test_xgb)
+
+
+# Ensemble (simple average 50/50)
+y_val_ens  = 0.5 * y_val_lstm  + 0.5 * y_val_xgb
+y_test_ens = 0.5 * y_test_lstm + 0.5 * y_test_xgb
+summarize_split("VAL (Ensemble)",  y_val,  y_val_ens)
+summarize_split("TEST (Ensemble)", y_test, y_test_ens)
+
+
+# Thresholds on validation (use ensemble)
+sweep_ens = sweep_thresholds(y_val, y_val_ens, resolution=1500)
+best_f1_row = sweep_ens.iloc[sweep_ens["f1"].idxmax()]
+thr_bestf1  = float(best_f1_row["threshold"])
+thr_cost, min_cost = pick_cost_min_threshold(y_val, y_val_ens, resolution=3000, cost_fn=COST_FN, cost_fp=COST_FP)
+thr_tgtrec  = pick_threshold_for_target_recall(y_val, y_val_ens, target=TARGET_RECALL, resolution=3000)
+
+print("\nChosen thresholds (Ensemble):")
+print(f"- Best-F1 on VAL: {thr_bestf1:.6f} (F1={best_f1_row['f1']:.4f}, P={best_f1_row['precision']:.4f}, R={best_f1_row['recall']:.4f})")
+print(f"- Cost-min on VAL: {thr_cost:.6f} (min cost={min_cost:.2f}, FN={COST_FN}, FP={COST_FP})")
+print(f"- Target recall ≥ {TARGET_RECALL:.2f}: {thr_tgtrec:.6f}")
+
+
+# Evaluate ensemble on TEST at those thresholds
+evaluate_at(y_test, y_test_ens, thr_bestf1, "TEST (Ensemble) Best-F1")
+evaluate_at(y_test, y_test_ens, thr_cost,   "TEST (Ensemble) Cost-Optimal")
+evaluate_at(y_test, y_test_ens, thr_tgtrec, "TEST (Ensemble) Target-Recall")
+
+
+# (Optional) PR curves
+try:
+    import matplotlib.pyplot as plt
+
+    def plot_pr(y_true, y_proba, title):
+        p, r, _ = precision_recall_curve(y_true, y_proba)
+        ap = average_precision_score(y_true, y_proba)
+        plt.figure()
+        plt.step(r, p, where="post")
+        plt.xlabel("Recall")
+        plt.ylabel("Precision")
+        plt.title(f"{title} (AP={ap:.4f})")
+        plt.grid(True, linestyle="--", linewidth=0.5)
+        plt.show()
+
+    plot_pr(y_test, y_test_lstm, "PR — LSTM (TEST)")
+    plot_pr(y_test, y_test_xgb,  "PR — XGBoost (TEST)")
+    plot_pr(y_test, y_test_ens,  "PR — Ensemble (TEST)")
+except Exception as e:
+    print("Skipping PR plots:", e)
+
+```
+
+    2025-08-27 11:15:37.046810: E tensorflow/compiler/xla/stream_executor/cuda/cuda_dnn.cc:9342] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+    2025-08-27 11:15:37.046859: E tensorflow/compiler/xla/stream_executor/cuda/cuda_fft.cc:609] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+    2025-08-27 11:15:37.046873: E tensorflow/compiler/xla/stream_executor/cuda/cuda_blas.cc:1518] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+
+
+    X_seq: (142857, 7, 80) y_seq: (142857,)
+    Train: (91428, 7, 80) Val: (22857, 7, 80) Test: (28572, 7, 80)
+    Train class counts: [91338    90]
+    Resampled train (LSTM): (182676, 7, 80) class counts: [91338 91338]
+    Epoch 1/40
+    714/714 - 33s - loss: 0.0041 - roc_auc: 0.9902 - pr_auc: 0.9894 - precision: 0.8560 - recall: 0.9996 - val_loss: 0.0045 - val_roc_auc: 0.6918 - val_pr_auc: 0.0371 - val_precision: 0.0278 - val_recall: 0.2174 - lr: 0.0010 - 33s/epoch - 46ms/step
+    Epoch 2/40
+    714/714 - 28s - loss: 5.1130e-04 - roc_auc: 0.9996 - pr_auc: 0.9994 - precision: 0.9858 - recall: 0.9998 - val_loss: 0.0045 - val_roc_auc: 0.6612 - val_pr_auc: 0.0447 - val_precision: 0.0577 - val_recall: 0.1304 - lr: 0.0010 - 28s/epoch - 40ms/step
+    Epoch 3/40
+    714/714 - 28s - loss: 8.5291e-05 - roc_auc: 0.9999 - pr_auc: 0.9999 - precision: 0.9982 - recall: 1.0000 - val_loss: 0.0046 - val_roc_auc: 0.7084 - val_pr_auc: 0.0702 - val_precision: 0.0301 - val_recall: 0.2174 - lr: 0.0010 - 28s/epoch - 40ms/step
+    Epoch 4/40
+    714/714 - 28s - loss: 1.4854e-04 - roc_auc: 0.9999 - pr_auc: 0.9999 - precision: 0.9967 - recall: 0.9999 - val_loss: 0.0044 - val_roc_auc: 0.6985 - val_pr_auc: 0.0827 - val_precision: 0.0870 - val_recall: 0.1739 - lr: 0.0010 - 28s/epoch - 40ms/step
+    Epoch 5/40
+    714/714 - 28s - loss: 5.4271e-05 - roc_auc: 1.0000 - pr_auc: 1.0000 - precision: 0.9987 - recall: 1.0000 - val_loss: 0.0038 - val_roc_auc: 0.7461 - val_pr_auc: 0.0582 - val_precision: 0.0500 - val_recall: 0.0870 - lr: 0.0010 - 28s/epoch - 40ms/step
+    Epoch 6/40
+    714/714 - 29s - loss: 3.2997e-04 - roc_auc: 0.9999 - pr_auc: 0.9999 - precision: 0.9914 - recall: 0.9996 - val_loss: 0.0034 - val_roc_auc: 0.7337 - val_pr_auc: 0.1208 - val_precision: 0.1316 - val_recall: 0.2174 - lr: 0.0010 - 29s/epoch - 40ms/step
+    Epoch 7/40
+    714/714 - 28s - loss: 8.9002e-05 - roc_auc: 0.9999 - pr_auc: 0.9999 - precision: 0.9980 - recall: 0.9999 - val_loss: 0.0038 - val_roc_auc: 0.7123 - val_pr_auc: 0.1413 - val_precision: 0.1923 - val_recall: 0.2174 - lr: 0.0010 - 28s/epoch - 39ms/step
+    Epoch 8/40
+    714/714 - 28s - loss: 2.5238e-05 - roc_auc: 1.0000 - pr_auc: 1.0000 - precision: 0.9994 - recall: 1.0000 - val_loss: 0.0036 - val_roc_auc: 0.7078 - val_pr_auc: 0.0965 - val_precision: 0.2105 - val_recall: 0.1739 - lr: 0.0010 - 28s/epoch - 39ms/step
+    Epoch 9/40
+    714/714 - 28s - loss: 3.4544e-06 - roc_auc: 1.0000 - pr_auc: 1.0000 - precision: 0.9999 - recall: 1.0000 - val_loss: 0.0041 - val_roc_auc: 0.6954 - val_pr_auc: 0.0842 - val_precision: 0.2000 - val_recall: 0.1304 - lr: 0.0010 - 28s/epoch - 40ms/step
+    Epoch 10/40
+    
+    Epoch 10: ReduceLROnPlateau reducing learning rate to 0.0005000000237487257.
+    714/714 - 28s - loss: 1.8601e-04 - roc_auc: 0.9999 - pr_auc: 0.9998 - precision: 0.9958 - recall: 0.9998 - val_loss: 0.0034 - val_roc_auc: 0.7801 - val_pr_auc: 0.0796 - val_precision: 0.1333 - val_recall: 0.0870 - lr: 0.0010 - 28s/epoch - 39ms/step
+    Epoch 11/40
+    714/714 - 28s - loss: 3.2810e-06 - roc_auc: 1.0000 - pr_auc: 1.0000 - precision: 0.9999 - recall: 1.0000 - val_loss: 0.0036 - val_roc_auc: 0.7738 - val_pr_auc: 0.0704 - val_precision: 0.1333 - val_recall: 0.0870 - lr: 5.0000e-04 - 28s/epoch - 39ms/step
+    Epoch 12/40
+    714/714 - 28s - loss: 1.2374e-06 - roc_auc: 1.0000 - pr_auc: 1.0000 - precision: 1.0000 - recall: 1.0000 - val_loss: 0.0038 - val_roc_auc: 0.7406 - val_pr_auc: 0.0684 - val_precision: 0.1538 - val_recall: 0.0870 - lr: 5.0000e-04 - 28s/epoch - 39ms/step
+    Epoch 13/40
+    
+    Epoch 13: ReduceLROnPlateau reducing learning rate to 0.0002500000118743628.
+    714/714 - 28s - loss: 7.1488e-07 - roc_auc: 1.0000 - pr_auc: 1.0000 - precision: 1.0000 - recall: 1.0000 - val_loss: 0.0041 - val_roc_auc: 0.7506 - val_pr_auc: 0.0703 - val_precision: 0.1818 - val_recall: 0.0870 - lr: 5.0000e-04 - 28s/epoch - 40ms/step
+    Epoch 14/40
+    714/714 - 28s - loss: 6.1504e-07 - roc_auc: 1.0000 - pr_auc: 1.0000 - precision: 1.0000 - recall: 1.0000 - val_loss: 0.0041 - val_roc_auc: 0.7541 - val_pr_auc: 0.0696 - val_precision: 0.1429 - val_recall: 0.0870 - lr: 2.5000e-04 - 28s/epoch - 40ms/step
+    Epoch 15/40
+    714/714 - 28s - loss: 3.5798e-07 - roc_auc: 1.0000 - pr_auc: 1.0000 - precision: 1.0000 - recall: 1.0000 - val_loss: 0.0044 - val_roc_auc: 0.7178 - val_pr_auc: 0.0684 - val_precision: 0.1818 - val_recall: 0.0870 - lr: 2.5000e-04 - 28s/epoch - 40ms/step
+    23/23 [==============================] - 2s 43ms/step
+    28/28 [==============================] - 1s 44ms/step
+    VAL (LSTM) ROC AUC: 0.6987 | PR AUC: 0.1458
+    TEST (LSTM) ROC AUC: 0.6749 | PR AUC: 0.0562
+    VAL (XGB) ROC AUC: 0.8473 | PR AUC: 0.3078
+    TEST (XGB) ROC AUC: 0.8693 | PR AUC: 0.1814
+    VAL (Ensemble) ROC AUC: 0.8380 | PR AUC: 0.4110
+    TEST (Ensemble) ROC AUC: 0.8760 | PR AUC: 0.2184
+    
+    Chosen thresholds (Ensemble):
+    - Best-F1 on VAL: 0.472982 (F1=0.5455, P=0.9000, R=0.3913)
+    - Cost-min on VAL: 0.472491 (min cost=141.00, FN=10.0, FP=1.0)
+    - Target recall ≥ 0.70: 0.003335
+    
+    === TEST (Ensemble) Best-F1 (threshold=0.472982) ===
+    Confusion Matrix:
+    [[28541     3]
+     [   23     5]]
+    
+    Classification Report:
+                  precision    recall  f1-score   support
+    
+               0     0.9992    0.9999    0.9995     28544
+               1     0.6250    0.1786    0.2778        28
+    
+        accuracy                         0.9991     28572
+       macro avg     0.8121    0.5892    0.6387     28572
+    weighted avg     0.9988    0.9991    0.9988     28572
+    
+    
+    === TEST (Ensemble) Cost-Optimal (threshold=0.472491) ===
+    Confusion Matrix:
+    [[28541     3]
+     [   23     5]]
+    
+    Classification Report:
+                  precision    recall  f1-score   support
+    
+               0     0.9992    0.9999    0.9995     28544
+               1     0.6250    0.1786    0.2778        28
+    
+        accuracy                         0.9991     28572
+       macro avg     0.8121    0.5892    0.6387     28572
+    weighted avg     0.9988    0.9991    0.9988     28572
+    
+    
+    === TEST (Ensemble) Target-Recall (threshold=0.003335) ===
+    Confusion Matrix:
+    [[23003  5541]
+     [    6    22]]
+    
+    Classification Report:
+                  precision    recall  f1-score   support
+    
+               0     0.9997    0.8059    0.8924     28544
+               1     0.0040    0.7857    0.0079        28
+    
+        accuracy                         0.8059     28572
+       macro avg     0.5018    0.7958    0.4501     28572
+    weighted avg     0.9988    0.8059    0.8915     28572
+    
+
+
+
+    
+![png](ModelEval_files/ModelEval_1_2.png)
+    
+
+
+
+    
+![png](ModelEval_files/ModelEval_1_3.png)
+    
+
+
+
+    
+![png](ModelEval_files/ModelEval_1_4.png)
+    
+
+
+From the above graphs, it is clear that precision falls as recall increases, for all the model permutations. Precisions is how often the model raises an alert for fraud, and how many of those are actually fraud (In the best case for ensemble, 5/8 are actually frauds so a respectable total, but 23 of the frauds were missed). For recall, it is the ratio of how many of the actual frauds were caught (in the best case for recall, 22 of the 28 frauds were found, but thats from a huge number of alerts, causing low precision) 
+
+Below, we have code to save our trained model, with both LSTM and XGboost parameters alongside the optimal tresholds. Here the values are set to optimize PR-AUC (Area Under the Precision–Recall Curve), which is the best KPI when considering rare-event case detections (such as fraud).
+
+
+```python
+import os, json
+
+os.makedirs("models", exist_ok=True)
+
+# Save LSTM (Keras v3 native format)
+lstm_model.save("models/lstm.keras")  # don't pass extra kwargs (like options)
+
+# Save XGBoost
+xgb.save_model("models/xgb.json")
+
+# Save ensemble config & (optional) thresholds
+ensemble_config = {
+    "sequence_length": 7,                
+    "num_features":   X_seq.shape[2],   
+    "weights": {"lstm": 0.5, "xgb": 0.5},
+    "thresholds": {
+        "best_f1":       0.472982,
+        "cost_min":      0.472491,
+        "target_recall": 0.003335
+    }
+}
+with open("models/ensemble_config.json", "w") as f:
+    json.dump(ensemble_config, f, indent=2)
+
+print("Saved: models/lstm.keras, models/xgb.json, models/ensemble_config.json")
+```
+
+#### Deployment
+
+##### Server
+
+The server serves the model in two ways, with the option for batch processing (e.g on logs) as well as real-time processing (the model needs to wait for at least 7 transactions to start providing decisions, as that is the window size for the LSTM. This can be modified to have the XGBoost running solo before the LSTM kicks in)
+```python
+import os
+import json
+from collections import defaultdict, deque
+from typing import List, Dict, Any
+
+import numpy as np
+import pandas as pd
+from flask import Flask, request, jsonify
+import joblib
+
+# Models
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from xgboost import XGBClassifier
+
+# Configuration loading
+MODELS_DIR = os.environ.get("MODELS_DIR", "models")
+CFG_PATH   = os.path.join(MODELS_DIR, "ensemble_config.json")
+TX_PATH    = os.path.join(MODELS_DIR, "inference_tx.joblib")
+LSTM_PATH  = os.path.join(MODELS_DIR, "lstm.keras")
+XGB_PATH   = os.path.join(MODELS_DIR, "xgb.json")
+
+with open(CFG_PATH, "r") as f:
+    CFG = json.load(f)
+
+SEQ_LEN      = int(CFG["sequence_length"])   # 7
+NUM_FEATS    = int(CFG["num_features"])      # 80
+ENS_WEIGHTS  = CFG.get("weights", {"lstm":0.5, "xgb":0.5})
+
+tx   = joblib.load(TX_PATH)
+COLS = tx["columns"]
+DEC_LEN = int(tx.get("decimal_length", 5))
+
+# Keras + XGB
+lstm_model = load_model(LSTM_PATH, compile=False)
+xgb = XGBClassifier()
+xgb.load_model(XGB_PATH)
+
+# Per-group rolling buffers for streaming
+BUFFERS: Dict[tuple, deque] = defaultdict(lambda: deque(maxlen=SEQ_LEN))
+
+# Encoders to match training phase
+def amt_encoder_series(s: pd.Series) -> np.ndarray:
+    ss = (s.astype(str).str.replace("$", "", regex=False)
+            .astype(float)
+            .map(lambda amt: max(1, amt))
+            .map(np.log))
+    return ss.to_numpy(dtype=np.float32).reshape(-1, 1)
+
+def decimal_encoder_series(s: pd.Series, length: int = 5) -> np.ndarray:
+    x = s.astype(str).str.replace(r"\D", "", regex=True)
+    x = x.replace("", "0").astype(np.int64)
+    cols = []
+    for _ in range(length):
+        cols.append(np.mod(x, 10).to_numpy())
+        x = np.floor_divide(x, 10)
+    return np.column_stack(cols).astype(np.float32)
+
+def time_encoder_df(df_time: pd.DataFrame) -> np.ndarray:
+    # df_time must contain Year, Month, Day, Time (HH:MM)
+    hm = df_time["Time"].astype(str).str.split(":", expand=True)
+    h = pd.to_numeric(hm[0], errors="coerce").fillna(0).astype(int)
+    m = pd.to_numeric(hm[1], errors="coerce").fillna(0).astype(int)
+    dt = pd.to_datetime(
+        dict(year=df_time["Year"], month=df_time["Month"], day=df_time["Day"], hour=h, minute=m),
+        errors="coerce"
+    ).fillna(pd.Timestamp("1970-01-01"))
+    return dt.astype("int64").to_numpy().reshape(-1,1).astype(np.float32)  # ns since epoch
+
+def preprocess_rows_to_features(df: pd.DataFrame) -> np.ndarray:
+    """
+    Recreate training-time order:
+      merchant_name(decimal->onehot),
+      merchant_city(decimal->onehot),
+      chip(impute->onehot),
+      errors(impute->onehot),
+      time(encode->scale),
+      amount(encode->scale)
+    """
+    # Ensure required columns are present
+    req = {
+        "merchant_name": COLS["merchant_name"],
+        "merchant_city": COLS["merchant_city"],
+        "chip": COLS["chip"],
+        "errors": COLS["errors"],
+        "time": COLS["time"],
+        "amount": COLS["amount"],
+    }
+    for k, col in req.items():
+        if isinstance(col, list):
+            missing = [c for c in col if c not in df.columns]
+            if missing:
+                raise ValueError(f"Missing columns for '{k}': {missing}")
+        else:
+            if col not in df.columns:
+                raise ValueError(f"Missing column '{col}'")
+
+    # Merchant Name
+    mn_dec = decimal_encoder_series(df[COLS["merchant_name"]], length=DEC_LEN)
+    mn_oh  = tx["merchant_name_onehot"].transform(mn_dec)
+
+    # Merchant City
+    mc_dec = decimal_encoder_series(df[COLS["merchant_city"]], length=DEC_LEN)
+    mc_oh  = tx["merchant_city_onehot"].transform(mc_dec)
+
+    # Use Chip
+    chip_raw = df[[COLS["chip"]]].astype(str)
+    chip_imp = tx["chip_imputer"].transform(chip_raw)
+    chip_oh  = tx["chip_onehot"].transform(chip_imp)
+
+    # Errors?
+    err_raw = df[[COLS["errors"]]].astype(str)
+    err_imp = tx["errors_imputer"].transform(err_raw)
+    err_oh  = tx["errors_onehot"].transform(err_imp)
+
+    # Time
+    t_enc = time_encoder_df(df[COLS["time"]])
+    t_scl = tx["time_scaler"].transform(t_enc)
+
+    # Amount
+    a_enc = amt_encoder_series(df[COLS["amount"]])
+    a_scl = tx["amount_scaler"].transform(a_enc)
+
+    X = np.concatenate([mn_oh, mc_oh, chip_oh, err_oh, t_scl, a_scl], axis=1).astype(np.float32)
+    if X.shape[1] != NUM_FEATS:
+        raise ValueError(f"Feature width mismatch: expected {NUM_FEATS}, got {X.shape[1]}")
+    return X
+
+def build_sequences(
+    X: np.ndarray,
+    df: pd.DataFrame,
+    group_keys: List[str],
+    seq_len: int,
+    pad_policy: str = "none"  # "none" | "repeat" | "zero"
+) -> Dict[str, Any]:
+    """
+    Build sliding sequences of length `seq_len` per group.
+    If a group has < seq_len rows:
+      - "none"  -> skip (default)
+      - "repeat"-> left-pad by repeating the first row
+      - "zero"  -> left-pad with zeros
+    """
+    hm = df["Time"].astype(str).str.split(":", expand=True)
+    h = pd.to_numeric(hm[0], errors="coerce").fillna(0).astype(int)
+    m = pd.to_numeric(hm[1], errors="coerce").fillna(0).astype(int)
+    ts = pd.to_datetime(
+        dict(year=df["Year"], month=df["Month"], day=df["Day"], hour=h, minute=m),
+        errors="coerce"
+    ).fillna(pd.Timestamp("1970-01-01"))
+    df = df.copy()
+    df["_ts"] = ts.values
+
+    seqs, anchors = [], []
+    for key_vals, g_idx in df.groupby(group_keys).groups.items():
+        g = df.loc[list(g_idx)].sort_values("_ts")
+        feats = X[g.index.to_numpy()]
+        n = feats.shape[0]
+        group_dict = dict(zip(group_keys, key_vals if isinstance(key_vals, tuple) else (key_vals,)))
+
+        if n < seq_len:
+            if pad_policy == "none":
+                continue
+            if pad_policy == "repeat":
+                pad = np.repeat(feats[:1], seq_len - n, axis=0)
+            elif pad_policy == "zero":
+                pad = np.zeros((seq_len - n, feats.shape[1]), dtype=np.float32)
+            else:
+                raise ValueError(f"Unknown pad_policy: {pad_policy}")
+            window = np.concatenate([pad, feats], axis=0)
+            seqs.append(window.astype(np.float32))
+            end_row = g.iloc[-1]
+            anchors.append({
+                "group": group_dict,
+                "end_index": int(end_row.name),
+                "end_time": str(end_row["_ts"]),
+                "end_id": None,
+            })
+            continue
+
+        # Normal sliding windows
+        for i in range(n - seq_len + 1):
+            window = feats[i:i+seq_len]
+            seqs.append(window.astype(np.float32))
+            end_row = g.iloc[i+seq_len-1]
+            anchors.append({
+                "group": group_dict,
+                "end_index": int(end_row.name),
+                "end_time": str(end_row["_ts"]),
+                "end_id": None,
+            })
+
+    if not seqs:
+        return {"sequences": np.zeros((0, seq_len, X.shape[1]), dtype=np.float32), "anchors": []}
+    return {"sequences": np.stack(seqs), "anchors": anchors}
+
+def ensemble_predict(seqs: np.ndarray, w_lstm: float, w_xgb: float) -> Dict[str, np.ndarray]:
+    # LSTM on full sequences
+    p_lstm = lstm_model.predict(seqs, batch_size=1024, verbose=0).ravel()
+    # XGB on last-timestep features
+    last_feats = seqs[:, -1, :]
+    p_xgb = xgb.predict_proba(last_feats)[:, 1]
+    s = w_lstm + w_xgb
+    w_lstm /= s; w_xgb /= s
+    p_ens = w_lstm * p_lstm + w_xgb * p_xgb
+    return {"lstm": p_lstm, "xgb": p_xgb, "ens": p_ens}
+
+# Flask server
+app = Flask(__name__)
+
+@app.get("/health")
+def health():
+    return jsonify({
+        "status": "ok",
+        "sequence_length": SEQ_LEN,
+        "num_features": NUM_FEATS,
+        "weights": ENS_WEIGHTS,
+        "expected_columns": COLS,
+    })
+
+# Batch processor
+@app.post("/predict")
+def predict():
+    """
+    Request JSON:
+    {
+      "records": [ {...}, {...}, ... ],         # raw rows with CSV schema
+      "group_keys": ["User","Card"],            # optional, default from saved meta
+      "pad_policy": "none"|"repeat"|"zero",     # optional
+      "weights": {"lstm":0.5,"xgb":0.5},        # optional
+      "threshold": 0.472982,                    # optional => returns 'label'
+      "return_components": true,                # optional => include p_lstm / p_xgb
+      "id_field": "TransactionID"               # optional (not used in anchors by default)
+    }
+    """
+    try:
+        payload = request.get_json(force=True)
+        if not payload or "records" not in payload:
+            return jsonify({"error": "Missing 'records' in JSON"}), 400
+
+        df = pd.DataFrame(payload["records"])
+        if df.empty:
+            return jsonify({"predictions": [], "note": "No rows received"}), 200
+
+        # Preprocess to features
+        X = preprocess_rows_to_features(df)
+
+        # Build sequences
+        group_keys = payload.get("group_keys") or COLS.get("group_keys", ["User","Card"])
+        pad_policy = payload.get("pad_policy", "none")
+        seq_pack = build_sequences(X, df, group_keys, SEQ_LEN, pad_policy=pad_policy)
+        seqs, anchors = seq_pack["sequences"], seq_pack["anchors"]
+        if seqs.shape[0] == 0:
+            return jsonify({"predictions": [], "note": "Not enough rows per group to form sequences"}), 200
+
+        # Ensemble predict
+        w = payload.get("weights") or ENS_WEIGHTS
+        p = ensemble_predict(seqs, float(w.get("lstm", 0.5)), float(w.get("xgb", 0.5)))
+        thr = payload.get("threshold", None)
+        labels = (p["ens"] >= float(thr)).astype(int).tolist() if thr is not None else [None]*len(p["ens"])
+
+        # Build response items, one per sequence
+        return jsonify({
+            "predictions": [
+                {
+                    "p_ensemble": float(p["ens"][i]),
+                    "label": labels[i],
+                    "p_lstm":  float(p["lstm"][i]) if payload.get("return_components") else None,
+                    "p_xgb":   float(p["xgb"][i])  if payload.get("return_components") else None,
+                    "group":   anchors[i]["group"],
+                    "end_index": anchors[i]["end_index"],
+                    "end_time":  anchors[i]["end_time"],
+                    "end_id":    anchors[i]["end_id"],
+                } for i in range(len(anchors))
+            ],
+            "sequence_length": SEQ_LEN
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Stream processor for real time detection
+@app.post("/predict_stream")
+def predict_stream():
+    """
+    Request JSON:
+    {
+      "record": { ...one row with CSV schema... },
+      "group_keys": ["User","Card"],            # optional, default from saved meta
+      "weights": {"lstm":0.5,"xgb":0.5},        # optional
+      "threshold": 0.472982,                    # optional
+      "return_components": true                 # optional
+    }
+    """
+    try:
+        payload = request.get_json(force=True)
+        if not payload or "record" not in payload:
+            return jsonify({"error": "Missing 'record'"}), 400
+
+        rec = payload["record"]
+        group_keys = payload.get("group_keys") or COLS.get("group_keys", ["User","Card"])
+        key = tuple(rec.get(k) for k in group_keys)
+
+        df = pd.DataFrame([rec])
+        X = preprocess_rows_to_features(df)   # (1, NUM_FEATS)
+
+        # Append to rolling buffer
+        BUFFERS[key].append(X[0])
+
+        have = len(BUFFERS[key])
+        need = SEQ_LEN - have
+        if need > 0:
+            return jsonify({
+                "status": "buffering",
+                "group": dict(zip(group_keys, key)),
+                "have": have,
+                "need": need
+            }), 200
+
+        # Form a single sequence from the buffer (oldest->newest)
+        seq = np.stack(list(BUFFERS[key]), axis=0)[None, :, :]  # (1, seq_len, NUM_FEATS)
+
+        w = payload.get("weights") or ENS_WEIGHTS
+        p = ensemble_predict(seq, float(w.get("lstm", 0.5)), float(w.get("xgb", 0.5)))
+        thr = payload.get("threshold", None)
+        label = int(p["ens"][0] >= float(thr)) if thr is not None else None
+
+        return jsonify({
+            "status": "ok",
+            "group": dict(zip(group_keys, key)),
+            "p_ensemble": float(p["ens"][0]),
+            "label": label,
+            "p_lstm": float(p["lstm"][0]) if payload.get("return_components") else None,
+            "p_xgb":  float(p["xgb"][0])  if payload.get("return_components") else None
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    # Run on port 8000 by default
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+```
+
+##### Client
+A sample client with random values to demonstrate requests.
+
+```python
+import requests
+
+BASE = "http://localhost:8000"
+
+rows = []
+for i in range(9):  # send >=7 to get a prediction
+    rows.append({
+        "User": "U2",
+        "Card": "C9",
+        "Merchant Name": f"Shop {2000+i}",
+        "Merchant City": f"City {i%4}",
+        "Use Chip": "Yes" if i%2==0 else "No",
+        "Errors?": "None",
+        "Year": 2024,
+        "Month": 8,
+        "Day": 1 + i,
+        "Time": f"{(9+i)%24:02d}:{(7*i)%60:02d}",
+        "Amount": str(15 + i*2.0)
+    })
+
+for row in rows:
+    r = requests.post(f"{BASE}/predict_stream",
+                      json={"record": row,
+                            "group_keys": ["User","Card"],
+                            "threshold": 0.472982,
+                            "return_components": True},
+                      timeout=30)
+    r.raise_for_status()
+    print(r.json())
+```
+
+
+
+
+
+
+
 ## Attribution
 
 Much of this documentation is based on the articles below—credit goes to the original authors for their work.  
