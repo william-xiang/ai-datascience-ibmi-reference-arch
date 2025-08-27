@@ -1,0 +1,13 @@
+{
+  "sequence_length": 7,
+  "num_features": 80,
+  "weights": {
+    "lstm": 0.5,
+    "xgb": 0.5
+  },
+  "thresholds": {
+    "best_f1": 0.472982,
+    "cost_min": 0.472491,
+    "target_recall": 0.003335
+  }
+}
