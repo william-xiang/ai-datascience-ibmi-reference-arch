@@ -1,0 +1,23 @@
+List of packages needed for current Sample Applications
+
+sklearn-pandas
+numpy
+joblib
+xgboost
+
+
+pandas
+	-numpy, python-dateutil, pytz, tzdata	
+torch
+	-typing-extensions, filelock, sympy, networkx
+scikit-learn
+	-numpy, scipy, joblib, threadpoolctl
+matplotlib
+	-contourpy, cycler, python-dateutil, fonttools, kiwisolver, numpy, packaging
+flask
+	-Werkzeug, Jinja2, itsdangerous, click
+requests
+	-urllib3, certifi, charset-normalizer, idna
+
+tensorflow
+	-absl-py, astunparse, flatbuffers, gast, google-pasta, grpcio, h5py, libclang, ml-dtypes, numpy, packaging, protobuf, six, 	termcolor, typing-extensions, wrapt, plus keras and tensorboard
